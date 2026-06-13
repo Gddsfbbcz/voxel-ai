@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Mine-imator AI Generator PWA</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#1e1e1e">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #121212; color: #ffffff; touch-action: none;}
+        .upload-box {
+            border: 2px dashed #555;
+            transition: all 0.2s;
+            cursor: pointer;
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+        }
+        .upload-box:hover { border-color: #4caf50; background-color: #1e1e1e; }
+        .upload-box.has-image { border-style: solid; border-color: #4caf50; }
+        #webgl-container { cursor: crosshair; outline: none; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body class="flex flex-col md:flex-row h-screen font-sans">
+
+    <div id="sidebar" class="w-full md:w-1/3 lg:w-1/4 p-4 bg-gray-900 border-r border-gray-800 overflow-y-auto flex flex-col gap-4 z-10 shadow-xl">
+        <div class="text-center">
+            <h1 class="text-xl font-bold text-green-400">Mine-imator AI Voxel</h1>
+            <p class="text-xs text-gray-400">Offline PWA by krdt</p>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+            <label class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-front">
+                <span class="text-sm font-semibold text-gray-300 drop-shadow-md">Front</span>
+                <input type="file" accept="image/*" class="hidden" onchange="handleUpload(this, 'front')">
+            </label>
+            <label class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-back">
+                <span class="text-sm font-semibold text-gray-300 drop-shadow-md">Back</span>
+                <input type="file" accept="image/*" class="hidden" onchange="handleUpload(this, 'back')">
+            </label>
+            <label class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-left">
+                <span class="text-sm font-semibold text-gray-300 drop-shadow-md">Left</span>
+                <input type="file" accept="image/*" class="hidden" onchange="handleUpload(this, 'left')">
+            </label>
+            <label class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-right">
+                <span class="text-sm font-semibold text-gray-300 drop-shadow-md">Right</span>
+                <input type="file" accept="image/*" class="hidden" onchange="handleUpload(this, 'right')">
+            </label>
+        </div>
+
+        <div class="flex items-center gap-2 mt-2">
+            <input type="checkbox" id="ai-enhance" class="w-4 h-4 text-green-500 rounded focus:ring-green-500 bg-gray-700 border-gray-600">
+            <label for="ai-enhance" class="text-sm text-cyan-400 font-semibold cursor-pointer">AI Enhance (Fill holes & Symmetry)</label>
+        </div>
+
+        <button onclick="generateModel()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded shadow-lg transition active:scale-95">
+            Generate 3D Model
+        </button>
+
+        <div class="bg-gray-800 p-3 rounded-lg text-xs text-gray-300 border border-gray-700">
+            <strong>Editor Tools:</strong><br>
+            • Click/Tap a block in 3D view to remove it.<br>
+            • Drag to rotate, scroll/pinch to zoom.<br>
+        </div>
+
+        <button onclick="exportModel()" id="btn-export" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded shadow-lg transition active:scale-95 opacity-50 cursor-not-allowed" disabled>
+            Export ZIP (OBJ + MTL + Textures)
+        </button>
+    </div>
+
+    <div id="webgl-container" class="flex-1 relative bg-[#1e1e1e]">
+        <div id="loading" class="absolute inset-0 flex items-center justify-center bg-black/60 z-20 hidden">
+            <div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-green-500"></div>
+        </div>
+    </div>
+
+    <div class="hidden">
+        <canvas id="canvas-front" width="16" height="32"></canvas>
+        <canvas id="canvas-back" width="16" height="32"></canvas>
+        <canvas id="canvas-left" width="16" height="32"></canvas>
+        <canvas id="canvas-right" width="16" height="32"></canvas>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // Register Service Worker for PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').then(reg => {
+                    console.log('SW registered!', reg);
+                }).catch(err => console.log('SW registration failed', err));
+            });
+        }
+
+        // --- State Management ---
+        const images = { front: null, back: null, left: null, right: null };
+        const W = 16, H = 32, D = 16;
+        let voxels = [];
+        let colors = [];
+        let modelGenerated = false;
+
+        // --- UI Interactions ---
+        window.handleUpload = (input, view) => {
+            const file = input.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                const box = document.getElementById(`box-${view}`);
+                box.style.backgroundImage = `url(${url})`;
+                box.classList.add('has-image');
+                box.querySelector('span').style.background = 'rgba(0,0,0,0.5)';
+                box.querySelector('span').style.padding = '2px 4px';
+                box.querySelector('span').style.borderRadius = '4px';
+
+                const img = new Image();
+                img.onload = () => { images[view] = img; };
+                img.src = url;
+            }
+        };
+
+        // --- Space Carving Logic ---
+        function getPixelData(canvasId, img) {
+            const canvas = document.getElementById(`canvas-${canvasId}`);
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (img) {
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            } else {
+                ctx.fillStyle = 'rgba(255, 255, 255, 1)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+            return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        }
+
+        function isSolid(data, x, y, width) {
+            const idx = (y * width + x) * 4;
+            const a = data[idx + 3];
+            if (a < 128) return false;
+            const r = data[idx], g = data[idx+1], b = data[idx+2];
+            if (r > 245 && g > 245 && b > 245) return false;
+            return true;
+        }
+
+        function getColor(data, x, y, width) {
+            const idx = (y * width + x) * 4;
+            return [data[idx], data[idx+1], data[idx+2]];
+        }
+
+        window.generateModel = () => {
+            if (!images.front && !images.back && !images.left && !images.right) {
+                alert("Please upload at least one image!");
+                return;
+            }
+
+            document.getElementById('loading').classList.remove('hidden');
+
+            setTimeout(() => {
+                const dataF = getPixelData('front', images.front);
+                const dataB = getPixelData('back', images.back);
+                const dataL = getPixelData('left', images.left);
+                const dataR = getPixelData('right', images.right);
+
+                voxels = Array(W).fill().map(() => Array(H).fill().map(() => Array(D).fill(false)));
+                colors = Array(W).fill().map(() => Array(H).fill().map(() => Array(D).fill(null)));
+
+                for (let y = 0; y < H; y++) {
+                    for (let x = 0; x < W; x++) {
+                        for (let z = 0; z < D; z++) {
+                            const imgY = H - 1 - y;
+
+                            const fSolid = isSolid(dataF, x, imgY, W);
+                            const bSolid = isSolid(dataB, W - 1 - x, imgY, W);
+                            const lSolid = isSolid(dataL, z, imgY, D);
+                            const rSolid = isSolid(dataR, D - 1 - z, imgY, D);
+
+                            if (fSolid && bSolid && lSolid && rSolid) {
+                                voxels[x][y][z] = true;
+                                
+                                let r = 0, g = 0, b = 0, count = 0;
+                                
+                                if (z === 0 && fSolid) { const c = getColor(dataF, x, imgY, W); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
+                                else if (z === D - 1 && bSolid) { const c = getColor(dataB, W - 1 - x, imgY, W); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
+                                
+                                if (x === 0 && lSolid) { const c = getColor(dataL, z, imgY, D); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
+                                else if (x === W - 1 && rSolid) { const c = getColor(dataR, D - 1 - z, imgY, D); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
+
+                                if (count === 0) {
+                                    const cF = getColor(dataF, x, imgY, W);
+                                    const cL = getColor(dataL, z, imgY, D);
+                                    r = (cF[0]+cL[0])/2; g = (cF[1]+cL[1])/2; b = (cF[2]+cL[2])/2;
+                                    count = 1;
+                                }
+
+                                colors[x][y][z] = [Math.floor(r/count), Math.floor(g/count), Math.floor(b/count)];
+                            }
+                        }
+                    }
+                }
+
+                if (document.getElementById('ai-enhance').checked) applyAIEnhancement();
+
+                render3DModel();
+                modelGenerated = true;
+                
+                const btn = document.getElementById('btn-export');
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+                
+                document.getElementById('loading').classList.add('hidden');
+            }, 50);
+        };
+
+        function applyAIEnhancement() {
+            const newVoxels = JSON.parse(JSON.stringify(voxels));
+            for(let x=1; x<W-1; x++) {
+                for(let y=1; y<H-1; y++) {
+                    for(let z=1; z<D-1; z++) {
+                        if(!voxels[x][y][z]) {
+                            let neighbors = 0;
+                            if(voxels[x+1][y][z]) neighbors++;
+                            if(voxels[x-1][y][z]) neighbors++;
+                            if(voxels[x][y+1][z]) neighbors++;
+                            if(voxels[x][y-1][z]) neighbors++;
+                            if(voxels[x][y][z+1]) neighbors++;
+                            if(voxels[x][y][z-1]) neighbors++;
+                            if(neighbors >= 4) {
+                                newVoxels[x][y][z] = true;
+                                colors[x][y][z] = colors[x-1][y][z] || [128,128,128];
+                            }
+                        }
+                    }
+                }
+            }
+            voxels = newVoxels;
+
+            const midX = Math.floor(W / 2);
+            for(let y=0; y<H; y++){
+                for(let z=0; z<D; z++){
+                    for(let x=0; x<midX; x++){
+                        const rx = W - 1 - x;
+                        if(voxels[x][y][z] || voxels[rx][y][z]) {
+                            voxels[x][y][z] = true;
+                            voxels[rx][y][z] = true;
+                            const cL = colors[x][y][z];
+                            const cR = colors[rx][y][z];
+                            if(!cL) colors[x][y][z] = cR;
+                            else if(!cR) colors[rx][y][z] = cL;
+                            else {
+                                const avg = [Math.floor((cL[0]+cR[0])/2), Math.floor((cL[1]+cR[1])/2), Math.floor((cL[2]+cR[2])/2)];
+                                colors[x][y][z] = avg;
+                                colors[rx][y][z] = avg;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Three.js Setup ---
+        const container = document.getElementById('webgl-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color('#1e1e1e');
+        
+        const gridHelper = new THREE.GridHelper(30, 30, 0x444444, 0x222222);
+        gridHelper.position.y = -0.5;
+        scene.add(gridHelper);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(20, 40, 20);
+        scene.add(dirLight);
+
+        const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+        camera.position.set(35, 25, 35);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 15, 0);
+        controls.update();
+
+        let instancedMesh;
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
+        const material = new THREE.MeshLambertMaterial({ color: 0xffffff });
+        let instanceMap = []; 
+
+        function render3DModel() {
+            if (instancedMesh) scene.remove(instancedMesh);
+            instanceMap = [];
+
+            let activeCount = 0;
+            for(let x=0; x<W; x++) for(let y=0; y<H; y++) for(let z=0; z<D; z++) if(voxels[x][y][z]) activeCount++;
+
+            instancedMesh = new THREE.InstancedMesh(geometry, material, activeCount);
+            
+            const dummy = new THREE.Object3D();
+            const cx = W/2, cz = D/2;
+            let i = 0;
+
+            for(let x=0; x<W; x++) {
+                for(let y=0; y<H; y++) {
+                    for(let z=0; z<D; z++) {
+                        if(voxels[x][y][z]) {
+                            dummy.position.set(x - cx + 0.5, y, z - cz + 0.5);
+                            dummy.updateMatrix();
+                            instancedMesh.setMatrixAt(i, dummy.matrix);
+                            
+                            const c = colors[x][y][z];
+                            instancedMesh.setColorAt(i, new THREE.Color(`rgb(${c[0]},${c[1]},${c[2]})`));
+                            
+                            instanceMap[i] = {x, y, z};
+                            i++;
+                        }
+                    }
+                }
+            }
+            instancedMesh.instanceMatrix.needsUpdate = true;
+            instancedMesh.instanceColor.needsUpdate = true;
+            scene.add(instancedMesh);
+        }
+
+        // --- Voxel Editing (Raycasting) ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        container.addEventListener('pointerdown', (event) => {
+            if (!modelGenerated || !instancedMesh) return;
+            
+            const rect = container.getBoundingClientRect();
+            // Handle touch or mouse
+            const clientX = event.clientX || (event.touches && event.touches[0].clientX);
+            const clientY = event.clientY || (event.touches && event.touches[0].clientY);
+
+            if (clientX === undefined) return;
+
+            mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(instancedMesh);
+
+            if (intersects.length > 0) {
+                const instanceId = intersects[0].instanceId;
+                const coords = instanceMap[instanceId];
+                
+                if(coords) {
+                    voxels[coords.x][coords.y][coords.z] = false;
+                    const dummy = new THREE.Object3D();
+                    dummy.scale.set(0,0,0);
+                    dummy.updateMatrix();
+                    instancedMesh.setMatrixAt(instanceId, dummy.matrix);
+                    instancedMesh.instanceMatrix.needsUpdate = true;
+                    instanceMap[instanceId] = null;
+                }
+            }
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+
+        // --- Export Logic ---
+        window.exportModel = () => {
+            if (!modelGenerated) return;
+
+            const zip = new JSZip();
+            const activeColors = new Set();
+            for(let x=0; x<W; x++) for(let y=0; y<H; y++) for(let z=0; z<D; z++) {
+                if(voxels[x][y][z]) activeColors.add(colors[x][y][z].join(','));
+            }
+            
+            const uniqueColors = Array.from(activeColors).map(c => c.split(',').map(Number));
+            const numColors = uniqueColors.length;
+            if(numColors === 0) { alert("Model is empty!"); return; }
+
+            const atlasDim = Math.max(1, Math.ceil(Math.sqrt(numColors)));
+            const atlasCanvas = document.createElement('canvas');
+            atlasCanvas.width = atlasDim; atlasCanvas.height = atlasDim;
+            const ctx = atlasCanvas.getContext('2d');
+            
+            const colorToVt = {};
+            const uvCoords = [];
+
+            for(let i=0; i<numColors; i++) {
+                const col = i % atlasDim;
+                const row = Math.floor(i / atlasDim);
+                
+                ctx.fillStyle = `rgb(${uniqueColors[i][0]}, ${uniqueColors[i][1]}, ${uniqueColors[i][2]})`;
+                ctx.fillRect(col, row, 1, 1);
+
+                const u = (col + 0.5) / atlasDim;
+                const v = 1.0 - (row + 0.5) / atlasDim;
+                
+                uvCoords.push({u, v});
+                colorToVt[uniqueColors[i].join(',')] = i + 1;
+            }
+
+            const atlasDataUrl = atlasCanvas.toDataURL("image/png");
+            const base64Data = atlasDataUrl.split(',')[1];
+            zip.file("model_atlas.png", base64Data, {base64: true});
+
+            let mtlStr = "newmtl atlas_material\nKa 1.0 1.0 1.0\nKd 1.0 1.0 1.0\nKs 0.0 0.0 0.0\nd 1.0\nillum 1\nmap_Kd model_atlas.png\n";
+            zip.file("model.mtl", mtlStr);
+
+            const cubeVerts = [
+                [0,0,0], [1,0,0], [1,1,0], [0,1,0],
+                [0,0,1], [1,0,1], [1,1,1], [0,1,1]
+            ];
+            const cubeFaces = [
+                [0,1,2,3], [1,5,6,2], [5,4,7,6], [4,0,3,7], [3,2,6,7], [4,5,1,0]
+            ];
+
+            let objStr = "mtllib model.mtl\no MinecraftVoxelModel\nusemtl atlas_material\n";
+            uvCoords.forEach(uv => { objStr += 
