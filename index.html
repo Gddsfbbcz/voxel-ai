@@ -18,10 +18,23 @@
             background-size: contain;
             background-repeat: no-repeat;
             background-position: center;
+            position: relative; /* Fixed for mobile touch */
         }
         .upload-box:hover { border-color: #4caf50; background-color: #1e1e1e; }
         .upload-box.has-image { border-style: solid; border-color: #4caf50; }
         #webgl-container { cursor: crosshair; outline: none; }
+        
+        /* Mobile friendly invisible file input */
+        .hidden-input {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            z-index: 10;
+            cursor: pointer;
+        }
     </style>
     <script type="importmap">
         {
@@ -30,6 +43,27 @@
                 "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
+    </script>
+    
+    <script>
+        window.uploadedImages = { front: null, back: null, left: null, right: null };
+
+        window.handleUpload = function(input, view) {
+            const file = input.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                const box = document.getElementById('box-' + view);
+                box.style.backgroundImage = "url('" + url + "')";
+                box.classList.add('has-image');
+                box.querySelector('span').style.background = 'rgba(0,0,0,0.5)';
+                box.querySelector('span').style.padding = '2px 4px';
+                box.querySelector('span').style.borderRadius = '4px';
+
+                const img = new Image();
+                img.onload = () => { window.uploadedImages[view] = img; };
+                img.src = url;
+            }
+        };
     </script>
 </head>
 <body class="flex flex-col md:flex-row h-screen font-sans">
@@ -41,22 +75,22 @@
         </div>
 
         <div class="grid grid-cols-2 gap-3">
-            <label class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-front">
-                <span class="text-sm font-semibold text-gray-300 drop-shadow-md">Front</span>
-                <input type="file" accept="image/*" class="hidden" onchange="handleUpload(this, 'front')">
-            </label>
-            <label class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-back">
-                <span class="text-sm font-semibold text-gray-300 drop-shadow-md">Back</span>
-                <input type="file" accept="image/*" class="hidden" onchange="handleUpload(this, 'back')">
-            </label>
-            <label class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-left">
-                <span class="text-sm font-semibold text-gray-300 drop-shadow-md">Left</span>
-                <input type="file" accept="image/*" class="hidden" onchange="handleUpload(this, 'left')">
-            </label>
-            <label class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-right">
-                <span class="text-sm font-semibold text-gray-300 drop-shadow-md">Right</span>
-                <input type="file" accept="image/*" class="hidden" onchange="handleUpload(this, 'right')">
-            </label>
+            <div class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-front">
+                <span class="text-sm font-semibold text-gray-300 drop-shadow-md z-0">Front</span>
+                <input type="file" accept="image/*" class="hidden-input" onchange="handleUpload(this, 'front')">
+            </div>
+            <div class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-back">
+                <span class="text-sm font-semibold text-gray-300 drop-shadow-md z-0">Back</span>
+                <input type="file" accept="image/*" class="hidden-input" onchange="handleUpload(this, 'back')">
+            </div>
+            <div class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-left">
+                <span class="text-sm font-semibold text-gray-300 drop-shadow-md z-0">Left</span>
+                <input type="file" accept="image/*" class="hidden-input" onchange="handleUpload(this, 'left')">
+            </div>
+            <div class="upload-box flex flex-col items-center justify-center h-28 rounded-lg bg-gray-800" id="box-right">
+                <span class="text-sm font-semibold text-gray-300 drop-shadow-md z-0">Right</span>
+                <input type="file" accept="image/*" class="hidden-input" onchange="handleUpload(this, 'right')">
+            </div>
         </div>
 
         <div class="flex items-center gap-2 mt-2">
@@ -105,30 +139,10 @@
             });
         }
 
-        // --- State Management ---
-        const images = { front: null, back: null, left: null, right: null };
         const W = 16, H = 32, D = 16;
         let voxels = [];
         let colors = [];
         let modelGenerated = false;
-
-        // --- UI Interactions ---
-        window.handleUpload = (input, view) => {
-            const file = input.files[0];
-            if (file) {
-                const url = URL.createObjectURL(file);
-                const box = document.getElementById(`box-${view}`);
-                box.style.backgroundImage = `url(${url})`;
-                box.classList.add('has-image');
-                box.querySelector('span').style.background = 'rgba(0,0,0,0.5)';
-                box.querySelector('span').style.padding = '2px 4px';
-                box.querySelector('span').style.borderRadius = '4px';
-
-                const img = new Image();
-                img.onload = () => { images[view] = img; };
-                img.src = url;
-            }
-        };
 
         // --- Space Carving Logic ---
         function getPixelData(canvasId, img) {
@@ -161,6 +175,8 @@
         }
 
         window.generateModel = () => {
+            const images = window.uploadedImages;
+            
             if (!images.front && !images.back && !images.left && !images.right) {
                 alert("Please upload at least one image!");
                 return;
@@ -337,7 +353,7 @@
             scene.add(instancedMesh);
         }
 
-        // --- Voxel Editing (Raycasting) ---
+        // --- Voxel Editing ---
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
 
@@ -345,7 +361,6 @@
             if (!modelGenerated || !instancedMesh) return;
             
             const rect = container.getBoundingClientRect();
-            // Handle touch or mouse
             const clientX = event.clientX || (event.touches && event.touches[0].clientX);
             const clientY = event.clientY || (event.touches && event.touches[0].clientY);
 
@@ -428,13 +443,4 @@
             let mtlStr = "newmtl atlas_material\nKa 1.0 1.0 1.0\nKd 1.0 1.0 1.0\nKs 0.0 0.0 0.0\nd 1.0\nillum 1\nmap_Kd model_atlas.png\n";
             zip.file("model.mtl", mtlStr);
 
-            const cubeVerts = [
-                [0,0,0], [1,0,0], [1,1,0], [0,1,0],
-                [0,0,1], [1,0,1], [1,1,1], [0,1,1]
-            ];
-            const cubeFaces = [
-                [0,1,2,3], [1,5,6,2], [5,4,7,6], [4,0,3,7], [3,2,6,7], [4,5,1,0]
-            ];
-
-            let objStr = "mtllib model.mtl\no MinecraftVoxelModel\nusemtl atlas_material\n";
-            uvCoords.forEach(uv => { objStr += 
+            const cubeVerts 
