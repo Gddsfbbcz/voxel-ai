@@ -1,0 +1,21 @@
+{
+  "name": "Mine-imator AI Generator",
+  "short_name": "Voxel AI",
+  "description": "Convert 2D Orthographic images into 3D Minecraft models for Mine-imator.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#1e1e1e",
+  "theme_color": "#388e3c",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23388e3c'/><rect x='25' y='25' width='50' height='50' fill='%23ffffff'/></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%23388e3c'/><rect x='25' y='25' width='50' height='50' fill='%23ffffff'/></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
