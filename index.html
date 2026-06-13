@@ -18,13 +18,12 @@
             background-size: contain;
             background-repeat: no-repeat;
             background-position: center;
-            position: relative; /* Fixed for mobile touch */
+            position: relative;
         }
         .upload-box:hover { border-color: #4caf50; background-color: #1e1e1e; }
         .upload-box.has-image { border-style: solid; border-color: #4caf50; }
         #webgl-container { cursor: crosshair; outline: none; }
         
-        /* Mobile friendly invisible file input */
         .hidden-input {
             position: absolute;
             top: 0;
@@ -98,7 +97,7 @@
             <label for="ai-enhance" class="text-sm text-cyan-400 font-semibold cursor-pointer">AI Enhance (Fill holes & Symmetry)</label>
         </div>
 
-        <button onclick="generateModel()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded shadow-lg transition active:scale-95">
+        <button onclick="generateModel()" id="btn-generate" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-4 rounded shadow-lg transition active:scale-95">
             Generate 3D Model
         </button>
 
@@ -114,8 +113,11 @@
     </div>
 
     <div id="webgl-container" class="flex-1 relative bg-[#1e1e1e]">
-        <div id="loading" class="absolute inset-0 flex items-center justify-center bg-black/60 z-20 hidden">
-            <div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-green-500"></div>
+        <div id="loading" class="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-20 hidden backdrop-blur-sm">
+            <div class="w-64 bg-gray-800 rounded-full h-5 mb-4 overflow-hidden border border-gray-600 shadow-lg">
+                <div id="progress-bar" class="bg-green-500 h-5 rounded-full" style="width: 0%; transition: width 0.2s ease-out;"></div>
+            </div>
+            <p id="progress-text" class="text-green-400 font-bold text-sm tracking-widest drop-shadow-md">Preparing... 0%</p>
         </div>
     </div>
 
@@ -130,12 +132,10 @@
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-        // Register Service Worker for PWA
+        // Register Service Worker
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('sw.js').then(reg => {
-                    console.log('SW registered!', reg);
-                }).catch(err => console.log('SW registration failed', err));
+                navigator.serviceWorker.register('sw.js').catch(err => console.log('SW registration failed', err));
             });
         }
 
@@ -144,7 +144,14 @@
         let colors = [];
         let modelGenerated = false;
 
-        // --- Space Carving Logic ---
+        // Async Sleep Helper (Allows browser to update the UI progress bar)
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        function updateProgress(text, percentage) {
+            document.getElementById('progress-bar').style.width = percentage + '%';
+            document.getElementById('progress-text').innerText = text + ' ' + Math.floor(percentage) + '%';
+        }
+
         function getPixelData(canvasId, img) {
             const canvas = document.getElementById(`canvas-${canvasId}`);
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -174,7 +181,7 @@
             return [data[idx], data[idx+1], data[idx+2]];
         }
 
-        window.generateModel = () => {
+        window.generateModel = async () => {
             const images = window.uploadedImages;
             
             if (!images.front && !images.back && !images.left && !images.right) {
@@ -183,61 +190,87 @@
             }
 
             document.getElementById('loading').classList.remove('hidden');
+            const btnGen = document.getElementById('btn-generate');
+            btnGen.disabled = true;
+            btnGen.classList.add('opacity-50');
 
-            setTimeout(() => {
-                const dataF = getPixelData('front', images.front);
-                const dataB = getPixelData('back', images.back);
-                const dataL = getPixelData('left', images.left);
-                const dataR = getPixelData('right', images.right);
+            updateProgress("Reading Images...", 5);
+            await sleep(100);
 
-                voxels = Array(W).fill().map(() => Array(H).fill().map(() => Array(D).fill(false)));
-                colors = Array(W).fill().map(() => Array(H).fill().map(() => Array(D).fill(null)));
+            const dataF = getPixelData('front', images.front);
+            const dataB = getPixelData('back', images.back);
+            const dataL = getPixelData('left', images.left);
+            const dataR = getPixelData('right', images.right);
 
-                for (let y = 0; y < H; y++) {
-                    for (let x = 0; x < W; x++) {
-                        for (let z = 0; z < D; z++) {
-                            const imgY = H - 1 - y;
+            voxels = Array(W).fill().map(() => Array(H).fill().map(() => Array(D).fill(false)));
+            colors = Array(W).fill().map(() => Array(H).fill().map(() => Array(D).fill(null)));
 
-                            const fSolid = isSolid(dataF, x, imgY, W);
-                            const bSolid = isSolid(dataB, W - 1 - x, imgY, W);
-                            const lSolid = isSolid(dataL, z, imgY, D);
-                            const rSolid = isSolid(dataR, D - 1 - z, imgY, D);
+            updateProgress("Carving Voxels...", 15);
+            await sleep(50);
 
-                            if (fSolid && bSolid && lSolid && rSolid) {
-                                voxels[x][y][z] = true;
-                                
-                                let r = 0, g = 0, b = 0, count = 0;
-                                
-                                if (z === 0 && fSolid) { const c = getColor(dataF, x, imgY, W); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
-                                else if (z === D - 1 && bSolid) { const c = getColor(dataB, W - 1 - x, imgY, W); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
-                                
-                                if (x === 0 && lSolid) { const c = getColor(dataL, z, imgY, D); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
-                                else if (x === W - 1 && rSolid) { const c = getColor(dataR, D - 1 - z, imgY, D); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
+            // Chunked processing so UI doesn't freeze
+            for (let y = 0; y < H; y++) {
+                // Update progress bar periodically
+                if (y % 4 === 0) {
+                    updateProgress("Carving Voxels...", 15 + (y / H) * 40);
+                    await sleep(10); // Yield to browser to paint UI
+                }
 
-                                if (count === 0) {
-                                    const cF = getColor(dataF, x, imgY, W);
-                                    const cL = getColor(dataL, z, imgY, D);
-                                    r = (cF[0]+cL[0])/2; g = (cF[1]+cL[1])/2; b = (cF[2]+cL[2])/2;
-                                    count = 1;
-                                }
+                for (let x = 0; x < W; x++) {
+                    for (let z = 0; z < D; z++) {
+                        const imgY = H - 1 - y;
 
-                                colors[x][y][z] = [Math.floor(r/count), Math.floor(g/count), Math.floor(b/count)];
+                        const fSolid = isSolid(dataF, x, imgY, W);
+                        const bSolid = isSolid(dataB, W - 1 - x, imgY, W);
+                        const lSolid = isSolid(dataL, z, imgY, D);
+                        const rSolid = isSolid(dataR, D - 1 - z, imgY, D);
+
+                        if (fSolid && bSolid && lSolid && rSolid) {
+                            voxels[x][y][z] = true;
+                            
+                            let r = 0, g = 0, b = 0, count = 0;
+                            
+                            if (z === 0 && fSolid) { const c = getColor(dataF, x, imgY, W); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
+                            else if (z === D - 1 && bSolid) { const c = getColor(dataB, W - 1 - x, imgY, W); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
+                            
+                            if (x === 0 && lSolid) { const c = getColor(dataL, z, imgY, D); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
+                            else if (x === W - 1 && rSolid) { const c = getColor(dataR, D - 1 - z, imgY, D); r+=c[0]; g+=c[1]; b+=c[2]; count++; }
+
+                            if (count === 0) {
+                                const cF = getColor(dataF, x, imgY, W);
+                                const cL = getColor(dataL, z, imgY, D);
+                                r = (cF[0]+cL[0])/2; g = (cF[1]+cL[1])/2; b = (cF[2]+cL[2])/2;
+                                count = 1;
                             }
+
+                            colors[x][y][z] = [Math.floor(r/count), Math.floor(g/count), Math.floor(b/count)];
                         }
                     }
                 }
+            }
 
-                if (document.getElementById('ai-enhance').checked) applyAIEnhancement();
+            if (document.getElementById('ai-enhance').checked) {
+                updateProgress("Applying AI Enhancement...", 60);
+                await sleep(50);
+                applyAIEnhancement();
+            }
 
-                render3DModel();
-                modelGenerated = true;
-                
-                const btn = document.getElementById('btn-export');
-                btn.disabled = false;
-                btn.classList.remove('opacity-50', 'cursor-not-allowed');
-                
-                document.getElementById('loading').classList.add('hidden');
-            }, 50);
+            updateProgress("Generating 3D Preview...", 80);
+            await sleep(50);
+            
+            render3DModel();
+            
+            updateProgress("Done!", 100);
+            await sleep(300);
+
+            modelGenerated = true;
+            const btnExport = document.getElementById('btn-export');
+            btnExport.disabled = false;
+            btnExport.classList.remove('opacity-50', 'cursor-not-allowed');
+            
+            btnGen.disabled = false;
+            btnGen.classList.remove('opacity-50');
+            document.getElementById('loading').classList.add('hidden');
         };
 
         function applyAIEnhancement() {
@@ -401,46 +434,16 @@
         });
 
         // --- Export Logic ---
-        window.exportModel = () => {
+        window.exportModel = async () => {
             if (!modelGenerated) return;
+            
+            const btnExport = document.getElementById('btn-export');
+            const originalText = btnExport.innerText;
+            btnExport.innerText = "Packing ZIP... Please wait";
+            btnExport.disabled = true;
+
+            await sleep(100); // Allow text to update
 
             const zip = new JSZip();
             const activeColors = new Set();
-            for(let x=0; x<W; x++) for(let y=0; y<H; y++) for(let z=0; z<D; z++) {
-                if(voxels[x][y][z]) activeColors.add(colors[x][y][z].join(','));
-            }
-            
-            const uniqueColors = Array.from(activeColors).map(c => c.split(',').map(Number));
-            const numColors = uniqueColors.length;
-            if(numColors === 0) { alert("Model is empty!"); return; }
-
-            const atlasDim = Math.max(1, Math.ceil(Math.sqrt(numColors)));
-            const atlasCanvas = document.createElement('canvas');
-            atlasCanvas.width = atlasDim; atlasCanvas.height = atlasDim;
-            const ctx = atlasCanvas.getContext('2d');
-            
-            const colorToVt = {};
-            const uvCoords = [];
-
-            for(let i=0; i<numColors; i++) {
-                const col = i % atlasDim;
-                const row = Math.floor(i / atlasDim);
-                
-                ctx.fillStyle = `rgb(${uniqueColors[i][0]}, ${uniqueColors[i][1]}, ${uniqueColors[i][2]})`;
-                ctx.fillRect(col, row, 1, 1);
-
-                const u = (col + 0.5) / atlasDim;
-                const v = 1.0 - (row + 0.5) / atlasDim;
-                
-                uvCoords.push({u, v});
-                colorToVt[uniqueColors[i].join(',')] = i + 1;
-            }
-
-            const atlasDataUrl = atlasCanvas.toDataURL("image/png");
-            const base64Data = atlasDataUrl.split(',')[1];
-            zip.file("model_atlas.png", base64Data, {base64: true});
-
-            let mtlStr = "newmtl atlas_material\nKa 1.0 1.0 1.0\nKd 1.0 1.0 1.0\nKs 0.0 0.0 0.0\nd 1.0\nillum 1\nmap_Kd model_atlas.png\n";
-            zip.file("model.mtl", mtlStr);
-
-            const cubeVerts 
+            for(let x=0; x<W; x++) for(let y=0; y<H; y++) for(let z=0; z<D;
